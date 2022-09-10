@@ -1,0 +1,932 @@
+---
+title: "European_Soccer_Predictions"
+author: "Tien_Dinh"
+date: '2022-06-06'
+output:
+  html_document:
+    code_folding: hide
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Exploring the data
+
+  My dataset is called: European Soccer Database 25k+ matches, players & teams attributes for European Professional Football. The dataset is from Kaggle.com:
+<https://www.kaggle.com/datasets/hugomathien/soccer>
+
+  This is the EA sport FIFA soccer database for data analysis for machine learning. The creator’s name is HUGO MATHIEN. We don’t know much about the guy’s history, but we do know that he is a dedicated soccer fan and a hardworking database engineer. There is no motivation listed in the description, but I believe this data was created as historical record of European soccer team/player/matches, either out of curiosity or true passion. And because of it, I believe this record project is no funded. The original data source was collected from multiple trusted soccer website, including FIFA’s contribution themselves. To list a few:
+  
+  * <http://football-data.mx-api.enetscores.com/> : scores, lineup, team formation and events
+  * <http://sofifa.com/> : players and teams attributes from EA Sports FIFA games. FIFA series and all FIFA assets property of EA Sports.
+
+  They offer 25,000 matches, over 10,000 real players and top 11 European Countries with their lead championship league. Within the league, they offer starting line-up, record of matches events. There are also players, players attributes, team and team attributes for each individual player and team. The two player tables include stats such as rating, strong_foot, crossing, defensive_work_rate, … The two team tables feature team name/id, buildUp, chanceCreation, defenseTeamWidth, … The data will be useful for evaluating player’s rating, team’s strength, team’s winning chance and more.
+  
+  From the evidence gathered above, from my opinion, the table is used to keep a true historical record of European soccer matches, players and teams in the past. All the data is useful for different purposes. Soccer enthusiasts can look up the database and check how much their favorite team won in the past, by how many goals, starting line-up. Teams and coaches can look up player’s rating and decide who to pursue in the future. There is also an interesting description of betting odds on the website, however this table is taken down due to some rule violations. Overall, this data is very useful for keeping track of European soccer in the past.
+  
+  The data is distributed publicly on Kaggle website (linked on top) with Open Data Commons Open Database License (ODbL) v1.0. The author started collecting data from 2008 until 2016 (most recent update is 16th Oct 2016). There is no restriction on usage, and it is solely dependent on the users. Reading the history of data, it was well-maintained and active from 2008 until 2016. After 2016, the author stopped working on the project, but the data is still opened to public until today. 
+  
+  The data has a historical impact on European soccer from the past till 2016. It keeps true record of matches, players and team for users who wanted to investigate in soccer. I believe this is the best soccer data set systematically collected on Kaggle (The data were given golden with 3000+ upvotes). Unfortunately, they don’t have recent 2022 update, but 2016 is a close timeline where the peak of current football generation was.
+  
+  **TLDR**:
+  
+  * Data from Kaggle: <https://www.kaggle.com/datasets/hugomathien/soccer>
+  * Data offers 25,000 matches, over 10,000 real players and top 11 European Countries     with their lead championship league
+  * Data collected by a single man: HUGO MATHIEN, came from multiple trusted European sites, including FIFA organization.
+  * Data is made public, free for all, unlimited usages
+  
+  
+## Summarize the data
+
+Loading library
+```{r , results="hide", warning=FALSE, error=FALSE}
+library(DBI)
+library(RSQLite)
+library(MASS)
+library(class)
+library(devtools)
+library(dplyr)
+library(ggplot2)
+library(naivebayes)
+require(moonBook)
+require(ggiraph)
+require(ggiraphExtra)
+library(rpart)
+library(caret)
+library(rpart.plot)
+library(data.tree)
+library(caTools)
+library(leaps)
+```
+Reading data
+```{r , results="hide", warning=FALSE}
+set.seed(0)
+
+# Read data (this is local)
+con <- dbConnect(SQLite(), "C:/Users/dvtie/OneDrive/Desktop/UO_STUDY/Spring_2022/Data_Science/Project/database.sqlite")
+
+# Fetch to R object
+Country <- dbFetch(dbSendQuery(con, "SELECT * FROM Country"))
+League <- dbFetch(dbSendQuery(con, "SELECT * FROM League"))
+Match <- dbFetch(dbSendQuery(con, "SELECT * FROM Match"))
+Player <- dbFetch(dbSendQuery(con, "SELECT * FROM Player"))
+Player_Attributes <- dbFetch(dbSendQuery(con, "SELECT * FROM Player_Attributes"))
+Team <- dbFetch(dbSendQuery(con, "SELECT * FROM Team"))
+Team_Attributes <- dbFetch(dbSendQuery(con, "SELECT * FROM Team_Attributes"))
+# sqlite_sequence is not really data here, just SQLite procedure.
+
+```
+
+Table list
+```{r, warning=FALSE}
+dbListTables(con)
+```
+
+
+## Investigating players
+
+Preparing data
+```{r, warning=FALSE}
+# Remove id first, this is just SQLite indexing
+Player = subset(Player, select = -1)
+Player_Attributes = subset(Player_Attributes, select = -1)
+
+PlayerTable = merge(Player, Player_Attributes, by=c("player_api_id","player_fifa_api_id"))
+PlayerTable = na.omit(PlayerTable)  # Removing N/A rows
+```
+
+
+Let's start with a question: **"How do you evaluate a soccer player?"**
+
+-----------------## UPDATE ## -------------------
+
+Player table
+```{r, warning=FALSE}
+summary(PlayerTable)
+```
+
+Analyzing the Player Table:
+
+  * There are identifications, categorical and numeric columns
+  * player_api_id, player_fifa_api_id player_name, birthday, date: are parts of player identity. Identity columns have no effect as a predictor, just a player identification
+  * preferred_foot, attacking_work_rate, defensive_work_rate are categorial predictors
+  * the rest are numeric predictors. Height is a positive real value (meters), weight is a positive real value (kg). Other numeric value range from 0 to 100. (0 is bad, 100 is perfect)
+  * Among numeric columns, there are overall_rating and potential given by FIFA rating:
+      
+      * potential defines a potential overall_rating of a player in the future. If a player is young then the potential might be higer than current overall_rating. If a player is old then the potential will be lower. This is a purely guess by FIFA. We mostly ignore this value and focus on overall_rating.
+      * **overall_rating is an actual value FIFA gives a player (on official sites, in games, player cards, ..). This value is based on a player's position and their main attributes. We don't know the method FIFA used to derive this number. It could just be the average of all main attributes. They could also use a model themselves **. Therefore, our job is to fit a model to predict this value, then compare with what FIFA gives.
+
+----------------------###------------------------
+
+
+After looking at the PlayerTable, some are just for identification, some are player's attribute. There are some assumptions/observations:
+
+  * player_api_id, player_fifa_api_id, player_name, birthday, date are part of identity factor, we can exclude this in choosing predictors
+  * height, weight, preferred_fot, crossing, finishing, shoot_power, stamina, ... they all can be good predictors for finding a player's overall_rating
+  * Out of predictors, preferred_fot, attacking_work_rate, and defensive_work_rate are categorial or factor predictor.
+
+  And some hypothesises:
+  
+  * height and weight were part of the identity table Player, but we still include them in the predictors to see which one is statistical significant 
+  * Most of the attributes by the look of it will affect the overall_rating of a player, however:
+  * Attacking player will rely more on attacking stats: finishing, volleys, dribbling, shot_power, ..
+  * Defending player will rely more on defensive stats: standing_tackle, sliding_tackle, marking, ..
+  * A goalkeeper mainly rely on goalkeeping stats: gk_diving, gk_handling, gk_positioning, ..
+  
+-----------------## UPDATE ## -------------------
+
+After asking the question, we will divide some strategy for analyzing the data:
+
+  * First, we take a quick look by a linear regression model to identify which predictors is significant
+  * **NOTE: The table doesn't provide us with a player's position. So in the project, I provide some 30 data of player's role based on the official website & common knowledge myself.**
+  * Then, we try to use different non-linear model (logistic, naive bayes, tree/forest) to classify a position of a player (attacker/defender/goalkeeper)
+  
+----------------------###------------------------
+  
+**Multiple linear regression**  
+The PlayerTable has overall_rating following by multiple player attributes. Let's try plot a model to predict overall_rating value. Given the goal to predict a numeric value, we should first try multiple linear regression:
+
+Player table
+```{r, warning=FALSE}
+summary(PlayerTable)
+```
+
+Preparing the data
+```{r, warning=FALSE}
+# Processing data
+test2016 = PlayerTable
+test2016$date<- substr(test2016$date, 1, 4) # change year to only "20XX" form
+# Selecting only year 2016, because the data is very big
+test2016 = test2016[test2016$date == "2016", ]
+
+# Original data was inconsistent. Changing some value in defensive_work_rate for consistency (low, medium, high) not (1,2,3...9)
+test2016$defensive_work_rate[test2016$defensive_work_rate == "1" | test2016$defensive_work_rate == "2" | test2016$defensive_work_rate == "3"] <- "low"
+test2016$defensive_work_rate[test2016$defensive_work_rate == "4" | test2016$defensive_work_rate == "5" | test2016$defensive_work_rate == "6"] <- "medium"
+test2016$defensive_work_rate[test2016$defensive_work_rate == "7" | test2016$defensive_work_rate == "8" | test2016$defensive_work_rate == "9"] <- "high"
+
+# Original data was inconsistent. Changing some value in attacking_work_rate for consistency (low, medium, high) not (1,2,3...9)
+test2016$attacking_work_rate[test2016$attacking_work_rate == "1" | test2016$attacking_work_rate == "2" | test2016$attacking_work_rate == "3"] <- "low"
+test2016$attacking_work_rate[test2016$attacking_work_rate == "4" | test2016$attacking_work_rate == "5" | test2016$attacking_work_rate == "6"] <- "medium"
+test2016$attacking_work_rate[test2016$attacking_work_rate == "7" | test2016$attacking_work_rate == "8" | test2016$attacking_work_rate == "9"] <- "high"
+
+# Change from character to factor
+test2016$preferred_foot <- as.factor(test2016$preferred_foot)
+test2016$attacking_work_rate <- as.factor(test2016$attacking_work_rate)
+test2016$defensive_work_rate <- as.factor(test2016$defensive_work_rate)
+```
+
+Fit multiple linear regression model:
+```{r, warning=FALSE}
+# Fit a linear regression model using some Remove some identity value
+fit1 = lm(test2016$overall_rating~., data=test2016[ , -which(names(test2016) %in% c("player_api_id","player_fifa_api_id", "player_name", "birthday", "date", "potential"))] )
+# Note that we eliminate potential because they are essentially the same value (potential and overall_rating). We just guess one
+summary(fit1)
+```
+
+From this summary, most of the data have significant impact on overall_rating, excluding: height, dribbling, free_kick_accuracy, balance, aggression, interceptions, vision (p-value > 0.01). Notice that height is not significant, but weight is significant. In real life, free_kick_accuracy being non important is understandable, but balance, aggression, interceptions, vision still contribute somewhat to overall_rating of a player. Nonetheless, let's verify the rest to see if they are statistically significant:
+
+Removing insignificant predictors from lm:
+```{r, warning=FALSE}
+# Fit a linear regression model using some Remove some identity value
+fit1 = lm(test2016$overall_rating~.-height- dribbling- free_kick_accuracy- balance- aggression- interceptions- vision, data=test2016[ , -which(names(test2016) %in% c("player_api_id","player_fifa_api_id", "player_name", "birthday", "date", "potential"))] )
+summary(fit1)
+```
+
+The result is hidden, but all of them are statistically significant now (some value is close to 0.01, but we keep using them)
+
+Comment's on this fit1 model
+
+  * The pairs (1Q,3Q)=(-1.7845, 1.7244) and (Min,Max)=(-11.9327,11.2269) value are very close. The Median=-0.0733 is close to 0. This indicates good residual results. 
+  * Almost all of the predictors are statistically significant (p-value < 0.01)
+  * The Std. Error is very close to 0, meaning very few errors.
+  * RSS value is 2.733 (on a 100 scale) which is a good low error
+  * Both multiple-R-squared and Adjusted R-squared are also good, close to 1 (0.7985 and 0.798), and close to each other (fit, no over-fitting)
+  * -> Drawing conclusion from the model fit1: Our multiple linear regression model fit the data very well.
+
+Confirming the predictors with graph:
+
+overall_rating vs short_passing (p-value < 2e-16) boxplot:
+```{r, warning=FALSE}
+#boxplot(test2016$overall_rating~test2016$short_passing, data=test2016, main="overall_rating vs short_passing", xlab="short_passing", ylab="overall_rating")
+
+ggplot(test2016,aes(y=overall_rating,x=short_passing))+geom_point()+stat_smooth(method="lm",se=FALSE)
+```
+This looks like a curve at first with the few noise when short_passing value is low. But when short_passing > 41, the value steadily increase in a linear fashion with very low error. This is understandable. Some player who has low short_passing but high overall_rating because their role does not emphasize short_passing. There are also only a few in between low pass high rating value. Nonetheless, short_passing proves to be a statistically significant predictor for overall_rating. We can improve this more in the later section with non-linear, classification strategy.
+
+Let's try some other significant predictor:
+
+overall_rating vs jumping (0.032879) boxplot:
+```{r, warning=FALSE}
+#boxplot(test2016$overall_rating~test2016$jumping, data=test2016, main="overall_rating vs jumping", xlab="jumping", ylab="overall_rating")
+
+ggplot(test2016,aes(y=overall_rating,x=jumping))+geom_point()+stat_smooth(method="lm",se=FALSE)
+```
+
+This is surprisingly linear. The noises are low and the points can be draw in a linear line. Jumping factor has slope of 0.005253 +- 0.002462 indicating that the relationship between jumping and overall_rating is close, somewhat significant. 
+
+
+overall_rating vs attacking_work_rate boxplot:
+```{r, warning=FALSE}
+boxplot(test2016$overall_rating~test2016$attacking_work_rate, data=test2016, main="overall_rating vs attacking_work_rate", xlab="attacking_work_rate", ylab="overall_rating")
+
+```
+
+This overall_rating vs attacking_work_rate shows that attacking_work_rate noises are low (within + or - 5). High,low, and medium are good predictors because it covers a wide range. None are insignificant factor as seen in the p-value of summary(fit1).  
+
+Now let's use this fit1 model to predict against **training** dataset test2016:
+
+Predictions: 
+```{r, warning=FALSE}
+# testing against the training table test2016:
+lm.pred = predict(fit1, data.frame(test2016), interval = "confidence")
+
+# Creating result table
+lm.table1 = data.frame(lm.pred)
+lm.table1 = cbind(lm.table1, true=test2016[, 8:8])
+lm.table1 = cbind(lm.table1, relativeError=(lm.table1$fit-lm.table1$true)/lm.table1$true)
+lm.table1 = cbind(lm.table1, percentageError=abs(lm.table1$fit-lm.table1$true)*100/lm.table1$true)
+```
+
+Listed random 20 predictions
+```{r, warning=FALSE}
+set.seed(3123)
+lm.table1[sample(1:nrow(lm.table1), 20), ]
+```
+
+Average percentage Error
+```{r, warning=FALSE}
+mean(lm.table1$percentageError)
+
+```
+
+Above is the prediction table for players in 2016. We can draw some conclusion from this prediction:
+  
+  * The average percentage error of all prediction is 3.089505% percent, which is pretty good
+  * fit1 prediction is very close to true value in lm.table1
+  * fit1 fit value has very close upper and lower bound, so very low error
+
+The prediction is good to predict the training dataset itself. However, we must test with a test set:
+  
+  
+Let's make another prediction with player stats from 2015 **(test dataset)**
+
+Preparing 2015 data:
+```{r, warning=FALSE}
+# Processing data
+test2015 = PlayerTable
+test2015$date<- substr(test2015$date, 1, 4) # change year to only "20XX" form
+# Selecting only year 2015, because the data is very big
+test2015 = test2015[test2015$date == "2015", ]
+
+# Original data was inconsistent. Changing some value in defensive_work_rate for consistency (low, medium, high) not (1,2,3...9)
+test2015$defensive_work_rate[test2015$defensive_work_rate == "1" | test2015$defensive_work_rate == "2" | test2015$defensive_work_rate == "3"] <- "low"
+test2015$defensive_work_rate[test2015$defensive_work_rate == "4" | test2015$defensive_work_rate == "5" | test2015$defensive_work_rate == "6"] <- "medium"
+test2015$defensive_work_rate[test2015$defensive_work_rate == "7" | test2015$defensive_work_rate == "8" | test2015$defensive_work_rate == "9"] <- "high"
+
+# Original data was inconsistent. Changing some value in attacking_work_rate for consistency (low, medium, high) not (1,2,3...9)
+test2015$attacking_work_rate[test2015$attacking_work_rate == "1" | test2015$attacking_work_rate == "2" | test2015$attacking_work_rate == "3"] <- "low"
+test2015$attacking_work_rate[test2015$attacking_work_rate == "4" | test2015$attacking_work_rate == "5" | test2015$attacking_work_rate == "6"] <- "medium"
+test2015$attacking_work_rate[test2015$attacking_work_rate == "7" | test2015$attacking_work_rate == "8" | test2015$attacking_work_rate == "9"] <- "high"
+
+# Change from character to factor
+test2015$preferred_foot <- as.factor(test2015$preferred_foot)
+test2015$attacking_work_rate <- as.factor(test2015$attacking_work_rate)
+test2015$defensive_work_rate <- as.factor(test2015$defensive_work_rate)
+```
+
+Predictions: 
+```{r, warning=FALSE}
+# using fit1 model to predict on test2015 dataset
+lm.pred = predict(fit1, data.frame(test2015), interval = "confidence")
+
+# Creating result table
+lm.table2 = data.frame(lm.pred)
+lm.table2 = cbind(lm.table2, true=test2015[, 8:8])
+lm.table2 = cbind(lm.table2, relativeError=(lm.table2$fit-lm.table2$true)/lm.table2$true)
+lm.table2 = cbind(lm.table2, percentageError=abs(lm.table2$fit-lm.table2$true)*100/lm.table2$true)
+```
+
+Listed random 20 predictions
+```{r, warning=FALSE}
+set.seed(234)
+lm.table2[sample(1:nrow(lm.table2), 20), ]
+```
+
+Average percentage Error
+```{r, warning=FALSE}
+mean(lm.table2$percentageError)
+
+```
+  Above is the prediction table for players in 2015 using fit1 model training with players in 2016. We can draw some conclusion from this prediction:
+  
+  * The average percentage error of all prediction is 3.27604% percent, which good
+  * fit1 prediction is very close to true value in lm.table1
+  * The average error is around 3.2%, but we see sometimes there's a 23% percentage error pop up. 
+  * fit1 fit-value has very close upper and lower bound, so very low error
+  * -> The result of predicting player's overall_rating between 2015 and 2016 dataset are close to each other, no significant different. This proves that the model fit the data well, no overfitting or underfitting, can be used to make good prediction.
+  
+-> **Conclusion**: Multiple linear regression model fits really well in predicting a numeric overall_rating value of a player based on different numeric and categorial attributes. 
+
+
+
+**Non-linear regression**
+
+One thing missing from the PlayerTable is the role of the player. A player's role is important to evaluate a player. An attacking player would have better attacking stats: shooting, dribbling, speed, ... A defensive player emphasizes on defensive stats: sliding_tackles, standing_tackles, intercept, aggresion,... A goalkeeper is different than others with their own stats: gk_diving, gk_reflex, ... If we can categorize a player into different roles, we can evaluate them better base on the important stats. 
+
+In this section, we try to answer this following question: **“How do categorize a player into different roles?”**
+Since we don't have roles in any table or any relation table, we need to make one our own by looking up on some official websites (FIFA.com, or Wiki.com site will usually tell you if the player is famous enough).
+The strategy are as followed:
+  
+  * Creating new training dataset by adding new column name: role
+  * Try multiple non-linear regression method
+  * Predict on a test set. Now since we don't have an actual test set to compare either, we can again rely on official sites to determine if our prediction is correct or not.
+  * Or we can use unsupervised prediction, by grouping up close related player, classify base on relationship.
+  * Figure out a best fitted model. Comments on discovery
+
+Preparing test dataset:
+``` {r, warning=FALSE}
+# Processing data
+role2016 = PlayerTable
+role2016$date<- substr(role2016$date, 1, 4) # change year to only "20XX" form
+# Selecting only year 2016, because the data is very big
+role2016 = role2016[role2016$date == "2016", ]
+
+# Original data was inconsistent. Changing some value in defensive_work_rate for consistency (low, medium, high) not (1,2,3...9)
+role2016$defensive_work_rate[role2016$defensive_work_rate == "1" | role2016$defensive_work_rate == "2" | role2016$defensive_work_rate == "3"] <- "low"
+role2016$defensive_work_rate[role2016$defensive_work_rate == "4" | role2016$defensive_work_rate == "5" | role2016$defensive_work_rate == "6"] <- "medium"
+role2016$defensive_work_rate[role2016$defensive_work_rate == "7" | role2016$defensive_work_rate == "8" | role2016$defensive_work_rate == "9"] <- "high"
+
+# Original data was inconsistent. Changing some value in attacking_work_rate for consistency (low, medium, high) not (1,2,3...9)
+role2016$attacking_work_rate[role2016$attacking_work_rate == "1" | role2016$attacking_work_rate == "2" | role2016$attacking_work_rate == "3"] <- "low"
+role2016$attacking_work_rate[role2016$attacking_work_rate == "4" | role2016$attacking_work_rate == "5" | role2016$attacking_work_rate == "6"] <- "medium"
+role2016$attacking_work_rate[role2016$attacking_work_rate == "7" | role2016$attacking_work_rate == "8" | role2016$attacking_work_rate == "9"] <- "high"
+
+# Change from character to factor
+role2016$preferred_foot <- as.factor(role2016$preferred_foot)
+role2016$attacking_work_rate <- as.factor(role2016$attacking_work_rate)
+role2016$defensive_work_rate <- as.factor(role2016$defensive_work_rate)
+
+# Adding role column, give random value
+set.seed(2313)
+roles <- c("Attacker", "Defender", "Goalkeeper")
+role2016$role <- sample(roles, size = nrow(role2016), replace = TRUE)
+
+# Manually selecting some players and give them the correct role:
+  # Goalkeepers
+p1 = role2016[role2016$player_api_id == 182917, ]
+p1["role"] <- "Goalkeeper"
+p2 = role2016[role2016$player_api_id == 30717, ]
+p2["role"] <- "Goalkeeper"
+p3 = role2016[role2016$player_api_id == 27299, ]
+p3["role"] <- "Goalkeeper"
+p4 = role2016[role2016$player_api_id == 30859, ]
+p4["role"] <- "Goalkeeper"
+p5 = role2016[role2016$player_api_id == 51949, ]
+p5["role"] <- "Goalkeeper"
+
+ # Attackers
+p6 = role2016[role2016$player_api_id == 169200, ]
+p6["role"] <- "Attacker"
+p7 = role2016[role2016$player_api_id == 23354, ]
+p7["role"] <- "Attacker"
+p8 = role2016[role2016$player_api_id == 286119, ]
+p8["role"] <- "Attacker"
+p9 = role2016[role2016$player_api_id == 30822, ]
+p9["role"] <- "Attacker"
+p10 = role2016[role2016$player_api_id == 30853, ]
+p10["role"] <- "Attacker"
+
+
+  # Defenders
+p11 = role2016[role2016$player_api_id == 30865, ]
+p11["role"] <- "Defender"
+p12 = role2016[role2016$player_api_id == 150739, ]
+p12["role"] <- "Defender"
+p13 = role2016[role2016$player_api_id == 30962, ]
+p13["role"] <- "Defender"
+p14 = role2016[role2016$player_api_id == 186137, ]
+p14["role"] <- "Defender"
+p15 = role2016[role2016$player_api_id == 56678, ]
+p15["role"] <- "Defender"
+
+  # Add some more because of singularity
+p16 = role2016[role2016$player_api_id == 184554, ]
+p16["role"] <- "Goalkeeper"
+p17 = role2016[role2016$player_api_id == 42422, ]
+p17["role"] <- "Goalkeeper"
+p18 = role2016[role2016$player_api_id == 26295, ]
+p18["role"] <- "Goalkeeper"
+p19 = role2016[role2016$player_api_id == 177126, ]
+p19["role"] <- "Goalkeeper"
+p20 = role2016[role2016$player_api_id == 40604, ]
+p20["role"] <- "Goalkeeper"
+
+p21 = role2016[role2016$player_api_id == 363333, ]
+p21["role"] <- "Attacker"
+p22 = role2016[role2016$player_api_id == 150565, ]
+p22["role"] <- "Attacker"
+p23 = role2016[role2016$player_api_id == 194165, ]
+p23["role"] <- "Attacker"
+p24 = role2016[role2016$player_api_id == 184536, ]
+p24["role"] <- "Attacker"
+p25 = role2016[role2016$player_api_id == 107417, ]
+p25["role"] <- "Attacker"
+
+p26 = role2016[role2016$player_api_id == 474589, ]
+p26["role"] <- "Defender"
+p27 = role2016[role2016$player_api_id == 282674, ]
+p27["role"] <- "Defender"
+p28 = role2016[role2016$player_api_id == 37762, ]
+p28["role"] <- "Defender"
+p29 = role2016[role2016$player_api_id == 56678, ]
+p29["role"] <- "Defender"
+p30 = role2016[role2016$player_api_id == 574200, ]
+p30["role"] <- "Defender"
+
+# Creating test set:
+newrole2016 = rbind(p1, p2, p3, p4, p5, p6, p7, p8, p9, p10, p11, p12, p13, p14, p15,
+                    p16, p17, p18, p19, p20, p21, p22, p23, p24, p25, p26, p27, p28, p29, p30)
+# Change from character to factor
+newrole2016$role <- as.factor(newrole2016$role)
+```
+
+Let's plot some graph:
+```{r, warning=FALSE}
+ggplot(newrole2016,aes(y=role,x=dribbling))+geom_point()+geom_smooth(method="glm")
+```
+
+```{r, warning=FALSE}
+ggplot(newrole2016,aes(y=role,x=gk_diving))+geom_point()+geom_smooth(method="glm")
+```
+
+```{r, warning=FALSE}
+ggplot(newrole2016,aes(y=role,x=interceptions))+geom_point()+geom_smooth(method="glm")
+```
+
+We can draw some conclusion from the given graph on limited train set:
+
+  * Dribbling has strong relation ship with attackers, medium with defender and little effect on goalkeeper
+  * Interception has strong relation ship with defenders, low with attacker and little effect on goalkeeper
+  * gk_diving has strong relation ship with goalkeeper, little effect on attacker and defender
+  * -> This is in fact true due to common sense.
+
+Let's train on this new train set using **logistic regression**:
+
+```{r, warning=FALSE}
+# glm
+fit2 = glm(newrole2016$role~., data=newrole2016[ , -which(names(newrole2016) %in% c("player_api_id","player_fifa_api_id", "player_name", "birthday", "date", "overall_rating", "potential"))], family="binomial")
+summary(fit2)
+```
+
+-----------------## UPDATE ## -------------------
+
+Comments on the general multiple logistic  model:
+
+  * The deviance residuals value is good. Similar (1Q, 3Q), (min, max). Median is close to 0
+  * However, the z value and Pr(<|z|) (or p-value) are 0 and 1 respectively, showing that none of our data is significant
+  * **The data is not big enough with variety. When testing with lda model, we get a similar result with a warning: Error in lda.default(x, grouping, ...) : variable 6 appears to be constant within groups. So we can see that a model that try to draw a line/non-linear line to fit a low amount of data will not work well**
+  * -> This is a big limited of logistic model if we are operating on limited **and not enough variety** known training set. Despite the graph showing good relationship on some factors, we will not be using this model further on.
+  * **In the next section, we switch to Naive Bayes. The reason is Naive Bayes work with probability, it is not trying to fit lines. So let's hope this works out.**
+
+---------------------###-------------------------
+  
+Let's train on this new train set using **Naive Bayes** probability method:
+
+Let's first plot some graph. We will not be using pairs(data[,]) because there are so many predictors. We will focus on some relationship that makes sense, then later test with model:
+
+Checking plot: role-goalkeeper vs gk_diving+gk_handling+gk_kicking+gk_positioning+gk_reflexes:
+```{r, warning=FALSE}
+pairs(~role+gk_diving+gk_handling+gk_kicking+gk_positioning+gk_reflexes, data=newrole2016)
+```
+
+Checking plot: role-attacker vs attacking_work_rate +sprint_speed+volleys+dribbling+shot_power:
+```{r, warning=FALSE}
+pairs(~role+attacking_work_rate +sprint_speed+volleys+dribbling+shot_power, data=newrole2016)
+```
+
+Checking plot: role-defender vs defensive_work_rate+ aggression+ standing_tackle+ sliding_tackle+ interceptions:
+```{r, warning=FALSE}
+pairs(~role+defensive_work_rate +aggression+standing_tackle+sliding_tackle+interceptions, data=newrole2016)
+```
+
+
+The main idea of these plots are to check the relationship with three roles attacker, defender and goalkeeper. If we just look at the first row of the plots, they are relationship between role and other factors. Drawing conclusion from these rows, as expected:
+
+  * The more gk_diving+gk_handling+gk_kicking+gk_positioning+gk_reflexes, the better chance this is a goalkeeper, very low chance of being a defender or attacker 
+  * The more attacking_work_rate +sprint_speed+volleys+dribbling+shot_power, the better chance this player is an attacker, low chance of being a goalkeeper. However, shot_power and sprint_speed still somewhat affect the probability of being a defender.
+  * The more defensive_work_rate+ aggression+ standing_tackle+ sliding_tackle+ interceptions, the better chance this is a defender, low chance of being a goalkeeper. However, aggression still somewhat contributes to a defender's probability
+
+Let's figure them out by using Naive Bayes probability model:
+
+Fit Naive Bayes model:
+```{r, warning=FALSE}
+# 
+fit3 <- naive_bayes(newrole2016$role~., data=newrole2016[ , -which(names(newrole2016) %in% c("player_api_id","player_fifa_api_id", "player_name", "birthday", "date", "overall_rating", "potential"))])
+print(fit3[8])
+print(fit3[5])
+print(fit3[4])
+```
+
+Interpreting the Naive Bayes model result:
+
+  * Looking at priority table, there are 46.66% attacker, 25.33% defender and 28% goalkeeper. This information is not major, but true to the common knowledge.
+Now let's take a look at the table:
+  * If we look at categorical predictor:
+      * preferred_foot: some of the left-foot player are goalkeeper or defender, most of them are right footed and evenly distributed. We have strange probability here because of limited train data
+      * attacking/defending_work_rate: We have the same strange probability. However, notice that most attacking_work_rate high has good chance of being an attacker. Same applies to defender
+  * If we look at numeric predictor, besides height and weight, the value are in range 0-100:
+      * Goalkeeper usually has better height and weight than regular player. Height is important to a goalkeeper, that's a fact
+      * There is a good chance a player is a goalkeeper if they have these high stats(>= 75): reactions, strength, jumping, gk_diving, gk_handling, gk_kicking, gk_positionning, gk_reflexes.
+      * There is a good chance a player is an attacker if they have these high stats(>= 75): finishing, dribbling, ball_control, acceleration, sprint_speed, agility, reactions, shot_power, stamina, positioning, vision.
+      * There is a good chance a player is a defender if they have these high stats(>= 75): heading_accuracy, sprint_speed, reactions, jumping, stamina, strength, aggression, interceptions, marking, standing_tackle, sliding_tackle.
+    * There is one predictor: reactions that show up in all three roles, we can conclude that either everyone has high reactions skill or the data does not have enough variety.
+    * -> The predictors give good chance of predicting a correct role. We can use this model for prediction some test data.
+
+    
+Predictions:
+```{r, warning=FALSE}
+# newrole2016 is new training set, we can use test2015 as test set
+naives_bayes.pred = predict(fit3, test2015, type = 'prob')
+```
+
+Since we don't have a test result to compare with, we will attach the prediction table to the original data set and make observations:
+
+Making table result
+```{r, warning=FALSE}
+# Adding Naive Bayes prediction to test2015 test set
+resultNB = test2015
+resultNB = cbind(resultNB, data.frame(naives_bayes.pred))
+# -> resultNB will hold all the role predictions for test2015 test-set
+```
+
+Select 5 known player as predictors:
+```{r, warning=FALSE}
+nb1 = resultNB[resultNB$player_api_id == 30893, ]
+nb2 = resultNB[resultNB$player_api_id == 30981, ]
+nb3 = resultNB[resultNB$player_api_id == 30717, ]
+nb4 = resultNB[resultNB$player_api_id == 248453, ]
+nb5 = resultNB[resultNB$player_api_id == 39027, ]
+
+resultNB5 = rbind(nb1, nb2, nb3, nb4, nb5)
+print(resultNB5)
+```
+
+Above is the prediction table for players in 2015 using fit3 Naive_Bayes model training with some players in 2016. Because of the limited test set, we can draw some conclusion based on observations: (Note*: There are some multiple data per person, this came from different period of the year):
+
+  * Cristiano Ronaldo, Messi and Paul Pogba is classified as attacking role, which is true. They have good attacking stats (shooting ,passing, speed, ...)
+  * Vincent Kompany is classified as a defender, which is true. He has good defensive stats (tackling, defende_working_rate, strength, jump, ..)
+  * Gianluigi Buffon is a goalkeeper, which is true. He has all high goalkeeping stats (gl_xxx, ...)
+  
+  
+-> **Conclusion**: Multiple logistic regression doesn't seem to perform well given an limited dataset on classification task. A simple Naive Bayes yet effective prediction models based on probability seems to work really well in the case of limited testset, multi-classification (>2). Naive Bayes that we used only train on 30-40 samples, but manage to predict really well on all 31779 rows of test2015 dataset.
+
+
+
+## Exploring Decision tree
+
+**Question**
+  Another technique in classification using in R is tree. We'd like to answer a type of question to utilize tree. Given the data above, and some analysis in the non-linear section. Let's answer this question: **How can you tell if a player is an attacking player or not?**. The strategy is to build a **decision tree**
+  
+Preparing testset and trainset
+```{r, warning=FALSE}
+## TRAIN
+dt2015 = test2015
+
+dt2015$attacking_work_rate[dt2015$attacking_work_rate == "low" | dt2015$attacking_work_rate == "medium" | dt2015$attacking_work_rate == "None"] <- "low"
+dt2015$defensive_work_rate[dt2015$defensive_work_rate == "low" | dt2015$defensive_work_rate == "medium" | dt2015$defensive_work_rate == "0"] <- "low"
+
+#choosing meaningful training data: dt2015
+dt2015 <- select(dt2015, height, weight, overall_rating, preferred_foot, attacking_work_rate, crossing, finishing, heading_accuracy, short_passing, volleys, dribbling, curve, free_kick_accuracy, long_passing, ball_control, acceleration, sprint_speed, agility, reactions, balance, shot_power, jumping, stamina, strength, long_shots, aggression, interceptions, positioning, vision, penalties, marking, standing_tackle, sliding_tackle, gk_diving, gk_handling, gk_kicking, gk_positioning, gk_reflexes)
+
+
+## TEST
+dt2016 = test2016
+
+dt2016$attacking_work_rate[dt2016$attacking_work_rate == "low" | dt2016$attacking_work_rate == "medium" | dt2016$attacking_work_rate == "None"] <- "low"
+dt2016$defensive_work_rate[dt2016$defensive_work_rate == "low" | dt2016$defensive_work_rate == "medium" | dt2016$defensive_work_rate == "0"] <- "low"
+
+#choosing meaningful test data: dt2016
+dt2016 <- select(dt2016, height, weight, overall_rating, preferred_foot, attacking_work_rate, crossing, finishing, heading_accuracy, short_passing, volleys, dribbling, curve, free_kick_accuracy, long_passing, ball_control, acceleration, sprint_speed, agility, reactions, balance, shot_power, jumping, stamina, strength, long_shots, aggression, interceptions, positioning, vision, penalties, marking, standing_tackle, sliding_tackle, gk_diving, gk_handling, gk_kicking, gk_positioning, gk_reflexes)
+```
+
+
+Build tree
+```{r, warning=FALSE}
+tree <- rpart(attacking_work_rate~., data = dt2015)
+```
+
+
+Predictions
+```{r, warning=FALSE}
+# predict against test set dt2016
+tree.attacking_work_rate.pred <- predict(tree, dt2016, type='class')
+```
+
+Evaluating the model
+```{r, warning=FALSE}
+confusionMatrix(tree.attacking_work_rate.pred, dt2016$attacking_work_rate)
+```
+Some comments on the confusion matrix: 
+
+  * The accuracy is 0.7354 or 73.54%, this is only a decent model. 
+  * Looking at precition and reference table:
+      
+      * There are 1590 correct prediction on attacking player and 8767 prediction on this is not an attacking player. There were 861 prediction on attacking player (false-negative), but in fact this is not an attacking player, so low false-negative. There were 2866 prediction on not an attacking player (false-positive), but in fact this is an attacking player, so low false-positive. The false-negative value is low so this prediction is not the worst case scenario
+      
+  * P-Value [Acc > NIR] : < 2.2e-16 so we can say the predictors are statistically significant
+
+Visualization example:
+```{r, warning=FALSE}
+prp(tree)
+```
+
+Quick comment on visualization:
+  
+  * The three most important factor contributes to an attacking player is: sprint_speed, stamina and position.
+  * If the player has sprint_speed < 71, then he's not likely to be an attacking player.
+  * If the player has sprint_speed >= 71 but stamina < 75, then he's not likely to be an attacking player
+  * If the player has sprint_speed >= 71 and stamina <= 75 but position < 60, then he's not likely to be an attacking player
+  * The least requirements for an attacking player is that sprint_speed >= 71 and stamina <= 75 and  position >= 60. This case, the player is more likely to be an attacking player
+-> **Conclusion**: Decision Tree can be used to classify either-or/1-out-of-2 problem. In the example, our tree guess a player is an attacking player based on all the important attributes, but only make 73.54% accuracy. But it has good visualize of how the progress is made (by looking at the tree)
+
+
+**Multiple logistic model**
+
+Let's give logistic model a redemption arc on predicting binary value (only 2-classification) and see if it performs better than decision tree.
+
+Quick test on statistically significant:
+```{r, warning=FALSE}
+# glm
+fit4 = glm(dt2015$attacking_work_rate~., data=dt2015, family="binomial")
+summary(fit4)
+```
+Comments on finding:
+  
+  * P-value and z value are distinct now given a good amount of data
+  * Residual value are good (3Q, 1Q close, max, min close, mean low, close to 0)
+  * All other factor excepts are statistically important: -weight- preferred_foot- free_kick_accuracy- agility-reactions- strength-long_shots- interceptions- vision- penalties-shot_power- ball_control- gk_handling- gk_positioning- gk_reflexes. We remove the non significant from the equation
+  * Surprisingly, gk_kicking has p-value = 1.44e-05 is considered significant for an attacking player
+Now that's everything is statistically significant, let's make prediction:
+
+Model:
+```{r, warning=FALSE}
+# glm
+fit4 = glm(dt2015$attacking_work_rate~.-weight-preferred_foot-free_kick_accuracy-agility-reactions-strength-long_shots-interceptions-vision-penalties-shot_power-ball_control-gk_handling-gk_positioning-gk_reflexes, data=dt2015, family="binomial")
+summary(fit4)
+```
+
+Predictions:
+```{r, warning=FALSE}
+glm.prob = predict(fit4, dt2016, type = "response")
+glm.pred = rep(0, length(glm.prob))
+glm.pred[glm.prob < 0.5] <- 1
+glm.pred[glm.prob >= 0.5] <- 0
+glm.true = rep(0, length(glm.prob))
+glm.true[dt2016$attacking_work_rate == "high"] <- 1
+glm.true[dt2016$attacking_work_rate == "low"] <- 0
+
+# Confusion matrix 
+table(glm.pred, glm.true)
+
+# Accuracy
+mean(glm.pred == glm.true)
+```  
+Some comments on the result of multiple logistic regression:
+
+  * The accuracy is round up to 76%, which is decent. This model has better accuracy than decision tree model 
+  * Looking at prediction and reference table:
+      * There are 8693 of non attacking player and 2449 attacking players which are correct predictions. There are 2449 predictions of non-attacking player but in-fact attacking player (false-positive). There are 935 predictions of attacking player but in-fact non-attacking player (false-negative). The number of false-negative is lowest, but up to 9% of the prediction, which tells you there are some mistakes.
+      
+-> **conclusion**: What can we tell from choosing a binary classification methods:
+  
+  * Decision tree gave decent visualization, data formation (you need to make a tree, so you'll be able to tell the factors contributing), but give less accuracy
+  * Multiple logistic regression performs well under a full (good variety) dataset, identifies correct statistical significant predictors, gives better results than decision tree
+  * -> If we'd choose a model for a binary classification, a logistic regression method is simple yet effective, will be a better choice.
+  
+  
+-----------------## UPDATE ## -------------------  
+## Generalization ##
+
+We continue to apply our model on earlier years. We choose year 2012 and 2013 because they are the last entry that gives consistency in the table. On earlier year, there are some inconsistency in the data. There is this error:
+**Error in model.frame.default(Terms, newdata, na.action = na.action, xlev = object$xlevels) :**
+  **factor attacking_work_rate has new levels le, norm, stoc, y**
+The attacking_work_rate has alwasy been high, medium, low. However, we are unable to explain these value: le, norm, stoc, y because there are no description in the offical site Kaggle. Since it is hard to inpterpret those values, let's analyze year 2013, 2012 and stop there.
+  
+
+Preparing 2013 test dataset for fit1 Naives Bayes:
+```{r, warning=FALSE}
+# Processing data
+test2013 = PlayerTable
+test2013$date<- substr(test2013$date, 1, 4) # change year to only "20XX" form
+# Selecting only year 2015, because the data is very big
+test2013 = test2013[test2013$date == "2013", ]
+
+# Original data was inconsistent. Changing some value in defensive_work_rate for consistency (low, medium, high) not (1,2,3...9)
+test2013$defensive_work_rate[test2013$defensive_work_rate == "1" | test2013$defensive_work_rate == "2" | test2013$defensive_work_rate == "3"] <- "low"
+test2013$defensive_work_rate[test2013$defensive_work_rate == "4" | test2013$defensive_work_rate == "5" | test2013$defensive_work_rate == "6"] <- "medium"
+test2013$defensive_work_rate[test2013$defensive_work_rate == "7" | test2013$defensive_work_rate == "8" | test2013$defensive_work_rate == "9"] <- "high"
+
+# Original data was inconsistent. Changing some value in attacking_work_rate for consistency (low, medium, high) not (1,2,3...9)
+test2013$attacking_work_rate[test2013$attacking_work_rate == "1" | test2013$attacking_work_rate == "2" | test2013$attacking_work_rate == "3"] <- "low"
+test2013$attacking_work_rate[test2013$attacking_work_rate == "4" | test2013$attacking_work_rate == "5" | test2013$attacking_work_rate == "6"] <- "medium"
+test2013$attacking_work_rate[test2013$attacking_work_rate == "7" | test2013$attacking_work_rate == "8" | test2013$attacking_work_rate == "9"] <- "high"
+
+# Change from character to factor
+test2013$preferred_foot <- as.factor(test2013$preferred_foot)
+test2013$attacking_work_rate <- as.factor(test2013$attacking_work_rate)
+test2013$defensive_work_rate <- as.factor(test2013$defensive_work_rate)
+```
+
+Preparing 2012 test dataset for fit1 and Naives Bayes:
+```{r, warning=FALSE}
+# Processing data
+test2012 = PlayerTable
+test2012$date<- substr(test2012$date, 1, 4) # change year to only "20XX" form
+# Selecting only year 2015, because the data is very big
+test2012 = test2012[test2012$date == "2012", ]
+
+# Original data was inconsistent. Changing some value in defensive_work_rate for consistency (low, medium, high) not (1,2,3...9)
+test2012$defensive_work_rate[test2012$defensive_work_rate == "1" | test2012$defensive_work_rate == "2" | test2012$defensive_work_rate == "3"] <- "low"
+test2012$defensive_work_rate[test2012$defensive_work_rate == "4" | test2012$defensive_work_rate == "5" | test2012$defensive_work_rate == "6"] <- "medium"
+test2012$defensive_work_rate[test2012$defensive_work_rate == "7" | test2012$defensive_work_rate == "8" | test2012$defensive_work_rate == "9"] <- "high"
+
+# Original data was inconsistent. Changing some value in attacking_work_rate for consistency (low, medium, high) not (1,2,3...9)
+test2012$attacking_work_rate[test2012$attacking_work_rate == "1" | test2012$attacking_work_rate == "2" | test2012$attacking_work_rate == "3"] <- "low"
+test2012$attacking_work_rate[test2012$attacking_work_rate == "4" | test2012$attacking_work_rate == "5" | test2012$attacking_work_rate == "6"] <- "medium"
+test2012$attacking_work_rate[test2012$attacking_work_rate == "7" | test2012$attacking_work_rate == "8" | test2012$attacking_work_rate == "9"] <- "high"
+
+# Change from character to factor
+test2012$preferred_foot <- as.factor(test2012$preferred_foot)
+test2012$attacking_work_rate <- as.factor(test2012$attacking_work_rate)
+test2012$defensive_work_rate <- as.factor(test2012$defensive_work_rate)
+```
+
+Preparing 2013 test for fit4 
+```{r, warning=FALSE}
+dt2013 = test2013
+
+dt2013$attacking_work_rate[dt2013$attacking_work_rate == "low" | dt2013$attacking_work_rate == "medium" | dt2013$attacking_work_rate == "None"] <- "low"
+dt2013$defensive_work_rate[dt2013$defensive_work_rate == "low" | dt2013$defensive_work_rate == "medium" | dt2013$defensive_work_rate == "0"] <- "low"
+
+#choosing meaningful training data: dt2013
+dt2013 <- select(dt2013, height, weight, overall_rating, preferred_foot, attacking_work_rate, crossing, finishing, heading_accuracy, short_passing, volleys, dribbling, curve, free_kick_accuracy, long_passing, ball_control, acceleration, sprint_speed, agility, reactions, balance, shot_power, jumping, stamina, strength, long_shots, aggression, interceptions, positioning, vision, penalties, marking, standing_tackle, sliding_tackle, gk_diving, gk_handling, gk_kicking, gk_positioning, gk_reflexes)
+```
+
+Preparing 2012 test for fit4 
+```{r, warning=FALSE}
+dt2012 = test2012
+
+dt2012$attacking_work_rate[dt2012$attacking_work_rate == "low" | dt2012$attacking_work_rate == "medium" | dt2012$attacking_work_rate == "None"] <- "low"
+dt2012$defensive_work_rate[dt2012$defensive_work_rate == "low" | dt2012$defensive_work_rate == "medium" | dt2012$defensive_work_rate == "0"] <- "low"
+
+#choosing meaningful test data: dt2012
+dt2012 <- select(dt2012, height, weight, overall_rating, preferred_foot, attacking_work_rate, crossing, finishing, heading_accuracy, short_passing, volleys, dribbling, curve, free_kick_accuracy, long_passing, ball_control, acceleration, sprint_speed, agility, reactions, balance, shot_power, jumping, stamina, strength, long_shots, aggression, interceptions, positioning, vision, penalties, marking, standing_tackle, sliding_tackle, gk_diving, gk_handling, gk_kicking, gk_positioning, gk_reflexes)
+```
+
+**a) Multiple linear-regression** on predicting earlier year
+
+Let's make another prediction with player stats from 2013 **(test dataset)**
+
+Predictions: 
+```{r, warning=FALSE}
+# using fit1 model (trained on 2016 dataset) to predict on test2013 dataset
+lm.pred3 = predict(fit1, data.frame(test2013), interval = "confidence")
+
+# Creating result table
+lm.table3 = data.frame(lm.pred3)
+lm.table3 = cbind(lm.table3, true=test2013[, 8:8])
+lm.table3 = cbind(lm.table3, relativeError=(lm.table3$fit-lm.table3$true)/lm.table3$true)
+lm.table3 = cbind(lm.table3, percentageError=abs(lm.table3$fit-lm.table3$true)*100/lm.table3$true)
+```
+
+Listed random 10 predictions
+```{r, warning=FALSE}
+set.seed(433)
+lm.table3[sample(1:nrow(lm.table3), 10), ]
+```
+
+Average percentage Error
+```{r, warning=FALSE}
+mean(lm.table3$percentageError)
+```
+  
+Another prediction with player stats from 2012 **(test dataset)**
+
+Predictions: 
+```{r, warning=FALSE}
+# using fit1 model (trained on 2016 dataset) to predict on test2010 dataset
+lm.pred2 = predict(fit1, data.frame(test2012), interval = "confidence")
+
+# Creating result table
+lm.table2 = data.frame(lm.pred2)
+lm.table2 = cbind(lm.table2, true=test2012[, 8:8])
+lm.table2 = cbind(lm.table2, relativeError=(lm.table2$fit-lm.table2$true)/lm.table2$true)
+lm.table2 = cbind(lm.table2, percentageError=abs(lm.table2$fit-lm.table2$true)*100/lm.table2$true)
+```
+
+Listed random 10 predictions
+```{r, warning=FALSE}
+set.seed(422)
+lm.table2[sample(1:nrow(lm.table2), 10), ]
+```
+
+Average percentage Error
+```{r, warning=FALSE}
+mean(lm.table2$percentageError)
+```  
+  
+  * **Conclusion**:
+  * The percentage error at year 2013 and 2014 are: at 3.601826% and 3.82785%, comparable with the error in year 2016 and 2015 respectively: 3.089505% and 3.27604%.
+  * We can realize that the further the year behind, the more the percentage error increase, but within the +- 0.1% range. We can assume as the earlier the year, the relationship between predictors and overall_rating loosens up. On a completely new data, the accuracy slightly decrease, but within 0.1% error which is acceptable
+  
+  
+  
+**b) Naive Bayes** on predicting earlier year:
+
+Let's make a prediction with player stats from 2013 **(test dataset)**
+
+Predictions:
+```{r, warning=FALSE}
+# newrole2016 is new training set, we can use test2013 as test set
+naives_bayes.pred = predict(fit3, test2013, type = 'prob')
+```
+
+Since we don't have a test result to compare with, we will attach the prediction table to the original data set and make observations:
+
+Making table result
+```{r, warning=FALSE}
+# Adding Naive Bayes prediction to test2013 test set
+resultNB = test2013
+resultNB = cbind(resultNB, data.frame(naives_bayes.pred))
+# -> resultNB will hold all the role predictions for test2013 test-set
+```
+
+Select 3 known player as predictors:
+```{r, warning=FALSE}
+nb1 = resultNB[resultNB$player_api_id == 30893, ]
+nb2 = resultNB[resultNB$player_api_id == 30717, ]
+nb3 = resultNB[resultNB$player_api_id == 39027, ]
+
+resultNB3 = rbind(nb1, nb2, nb3)
+print(resultNB3)
+```
+
+  * **Conclusion**: 
+  * Naive Bayes fit really well when predicting roles. Cristiano Ronaldo is still an attacker, Buffon is a goalkeeper and Vincent Kompany is a defender. Nothing changes here. The results is good as expected.
+  * (NOTES*: We only test on 2013 this time because there is no actual table to compare with. This is to minimize the reading)
+  
+  
+**c) Logistic regression** on predicting attacking/non-attacking players:
+
+fit4 is the model that we trained on dt2015 training dataset. Let's apply it to different years:
+
+Predictions for training dataset 2013:
+```{r, warning=FALSE}
+glm.prob = predict(fit4, dt2013, type = "response")
+glm.pred = rep(0, length(glm.prob))
+glm.pred[glm.prob < 0.5] <- 1
+glm.pred[glm.prob >= 0.5] <- 0
+glm.true = rep(0, length(glm.prob))
+glm.true[dt2013$attacking_work_rate == "high"] <- 1
+glm.true[dt2013$attacking_work_rate == "low"] <- 0
+
+# Confusion matrix 
+table(glm.pred, glm.true)
+
+# Accuracy
+mean(glm.pred == glm.true)
+``` 
+Predictions for training dataset 2012:
+```{r, warning=FALSE}
+glm.prob = predict(fit4, dt2012, type = "response")
+glm.pred = rep(0, length(glm.prob))
+glm.pred[glm.prob < 0.5] <- 1
+glm.pred[glm.prob >= 0.5] <- 0
+glm.true = rep(0, length(glm.prob))
+glm.true[dt2012$attacking_work_rate == "high"] <- 1
+glm.true[dt2012$attacking_work_rate == "low"] <- 0
+
+# Confusion matrix 
+table(glm.pred, glm.true)
+
+# Accuracy
+mean(glm.pred == glm.true)
+``` 
+  * **Conclusion**:
+  * Correct predicting results on year 2013 and 2012 respectively is 78.62316% and 80.65615%, which is surprisingly better than result in year 2016: 75.97274%
+  * -> Despite the change in years (which means completely new dataset, new size, new attributes, ..), the logistic model on binary classification works really well.
+  
+  
+  * **-> CONCLUSION ON GENERALIZATION**: The interaction terms or non-linear terms help. Our model continues to generalize on earlier year and work well as long as the data is consistent.
+
+---------------------###-------------------------
+
+
+## Impact  
+    From the work presented above, we can see some uses in predicting a historical European soccer dataset. If the goal is to evaluate the **numeric** overall_rating of a player, we would use multiple linear regression model. If the goal is to **classify** a player into different roles **(>=3)**, we'd want to use **Naives Bayes**, a simple but effective method. If the goal is to **binary classify** (either-or attributes), we'd want to use **logistic regression method**. The analysis suggests those method fit the best given the good result prediction on a ten of thousands scale of entries. **The analysis also generalizes really well given data from different years**. However, the data is bias to the author who provided the data, attributes and rating. Since this project was made out of passion, the result even if accurate would given only an entertainment value. But no one would stop you to use data science to make good scientific **betting** guess. The results if weren't accurate would not significantly impact anybody but the bettor. I hope this contribution is helpful to those who'd like to study data science, and provide an entertainment value to European soccer fans.
+    
+## END
+
+
+
+

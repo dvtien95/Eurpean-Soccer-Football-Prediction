@@ -1,0 +1,11 @@
+name: Publish Document
+title:
+username:
+account: rpubs
+server: rpubs.com
+hostUrl: rpubs.com
+appId: https://api.rpubs.com/api/v1/document/913507/05bad308b4a649c1a6007b554e145795
+bundleId: https://api.rpubs.com/api/v1/document/913507/05bad308b4a649c1a6007b554e145795
+url: http://rpubs.com/dvtien95/913507/edit
+when: 1654923450.34126
+lastSyncTime: 1654923450.34126
